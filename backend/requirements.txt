@@ -1,0 +1,12 @@
+# VaR Monte Carlo Backend Dependencies
+# Install with: pip install -r requirements.txt
+
+fastapi==0.115.*
+uvicorn[standard]==0.34.*
+yfinance==0.2.*
+numpy==2.2.*
+pandas==2.2.*
+scipy==1.14.*
+pydantic==2.10.*
+httpx==0.28.*
+pytest==8.*
