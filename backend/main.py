@@ -21,6 +21,7 @@ from config import (
     CORS_ALLOWED_ORIGINS,
 )
 from routers.simulation import router as simulation_router
+from schemas.responses import HealthResponse
 
 
 # ---------------------------------------------------------------------------
@@ -62,11 +63,12 @@ app.include_router(simulation_router)
 
 @app.get(
     "/api/health",
+    response_model=HealthResponse,
     tags=["meta"],
     summary="Health check",
     response_description="Service status and API version.",
 )
-async def health_check() -> dict:
+async def health_check() -> HealthResponse:
     """Lightweight liveness probe.
 
     Used by:
@@ -77,4 +79,4 @@ async def health_check() -> dict:
     Returns:
         ``{"status": "healthy", "version": "<API_VERSION>"}``
     """
-    return {"status": "healthy", "version": API_VERSION}
+    return HealthResponse(status="healthy", version=API_VERSION)
