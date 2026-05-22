@@ -2,7 +2,7 @@
 
 This project is a web application that estimates potential investment losses using Value-at-Risk (VaR) and Conditional Value-at-Risk (CVaR) computed with Monte Carlo simulations over historical stock data.
 
-## 🚀 Project Overview
+## Project Overview
 
 The core purpose of this tool is to provide risk management insights for single-asset portfolios. It fetches real-time historical market data, runs thousands of simulation paths to project future prices, and statistically determines the maximum expected loss at a given confidence level.
 
@@ -12,19 +12,19 @@ The core purpose of this tool is to provide risk management insights for single-
 - **Comprehensive Risk Metrics:** Calculates both Historical VaR/CVaR and Simulated VaR/CVaR.
 - **RESTful API:** Clean, documented FastAPI endpoints for seamless frontend integration.
 
-## 🏗️ Architecture
+## Architecture
 
 - **Backend:** Python 3.12+, FastAPI, Uvicorn (ASGI)
 - **Data & Math:** `numpy`, `pandas`, `scipy`, `yfinance`
 - **Validation:** Pydantic v2
 - **Frontend (TBD):** React + Vite + TypeScript
 
-## 📂 Key Documentation
+## Key Documentation
 
 - **API Contracts:** Check `docs/api-contracts.md` for the exact JSON request/response shapes required by the frontend and backend.
 - **Quant Logic PoC:** Check the `notebooks/` folder for the original Jupyter notebooks validating the Bootstrap Monte Carlo methodology.
 
-## 💻 Running the Backend Locally
+## Running the Backend Locally
 
 ### 1. Setup Virtual Environment
 ```bash
@@ -51,7 +51,7 @@ Once the server is running, navigate to:
 
 From there, you can test all endpoints, including the main simulation engine (`POST /api/simulate`).
 
-## 🔄 API Endpoints Summary
+## API Endpoints Summary
 
 - `GET /api/health`: Lightweight health check.
 - `GET /api/tickers`: Returns a list of predefined supported tickers.
