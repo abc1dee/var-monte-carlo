@@ -9,6 +9,7 @@ Change process: propose → both sides agree → update api-contracts.md → upd
 this file AND src/types/api.ts in the same commit.
 """
 
+from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -400,3 +401,50 @@ class SimulationResponse(BaseModel):
     final_values_histogram: Histogram = Field(
         description="Distribution of final portfolio values across all simulated paths."
     )
+
+
+# ---------------------------------------------------------------------------
+# History and User Tier responses
+# ---------------------------------------------------------------------------
+
+
+class SimulationHistoryItem(BaseModel):
+    """A single past simulation run."""
+
+    ticker: str
+    horizon_days: int
+    confidence_level: float
+    num_simulations: int
+    initial_investment: float
+    var_pct: float
+    var_dollar: float
+    cvar_pct: float
+    cvar_dollar: float
+    current_price: float
+    created_at: datetime
+
+
+class SimulationHistoryResponse(BaseModel):
+    """Response for GET /api/user/history."""
+
+    runs: list[SimulationHistoryItem]
+    total: int
+
+
+class TierLimits(BaseModel):
+    max_simulations_per_hour: int
+    max_num_simulations: int
+    max_horizon_days: int
+
+
+class TierUsage(BaseModel):
+    simulations_this_hour: int
+    max_per_hour: int
+
+
+class UserTierResponse(BaseModel):
+    """Response for GET /api/user/tier."""
+
+    tier: str
+    limits: TierLimits
+    usage: TierUsage

@@ -20,20 +20,39 @@ HTTP responses using the custom exceptions from ``exceptions.py``.
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from config import ALLOWED_TICKERS, HISTORICAL_DATA_PERIOD
-from exceptions import InvalidTickerError, DataFetchError, SimulationError
+from supabase import create_client, Client
+from settings import settings
+_supabase: Client = create_client(settings.supabase_url, settings.supabase_service_role_key)
+
+from config import (
+    ALLOWED_TICKERS,
+    HISTORICAL_DATA_PERIOD,
+    GUEST_MAX_NUM_SIMULATIONS,
+    GUEST_MAX_HORIZON_DAYS,
+    AUTH_MAX_NUM_SIMULATIONS,
+    AUTH_MAX_HORIZON_DAYS,
+    GUEST_MAX_SIMULATIONS_PER_HOUR,
+    AUTH_MAX_SIMULATIONS_PER_HOUR,
+)
+from exceptions import InvalidTickerError, DataFetchError, SimulationError, AuthorizationError
 from schemas.requests import SimulationRequest
 from schemas.responses import (
     SimulationResponse,
     TickersResponse,
     ValidateTickerResponse,
     ErrorResponse,
+    SimulationHistoryResponse,
+    UserTierResponse,
+    TierLimits,
+    TierUsage,
 )
 from services import data_service
 from services import quant_engine
+from auth import UserContext, get_current_user, require_auth
+from middleware.rate_limit import limiter, get_dynamic_limit
 
 # ---------------------------------------------------------------------------
 # Router instance
@@ -109,6 +128,10 @@ async def validate_ticker(symbol: str) -> ValidateTickerResponse:
             "description": "Invalid ticker symbol.",
             "model": ErrorResponse,
         },
+        403: {
+            "description": "Tier limit exceeded.",
+            "model": ErrorResponse,
+        },
         503: {
             "description": "Yahoo Finance is unreachable.",
             "model": ErrorResponse,
@@ -119,7 +142,12 @@ async def validate_ticker(symbol: str) -> ValidateTickerResponse:
         },
     },
 )
-async def run_simulation(request: SimulationRequest) -> SimulationResponse:
+@limiter.limit(get_dynamic_limit)
+async def run_simulation(
+    request: Request,
+    sim_request: SimulationRequest,
+    user: UserContext = Depends(get_current_user)
+) -> SimulationResponse:
     """Fetch historical data, run Monte Carlo simulation, and return results.
 
     **Pipeline:**
@@ -133,16 +161,29 @@ async def run_simulation(request: SimulationRequest) -> SimulationResponse:
     HTTP status code with a structured error body.
     """
     try:
+        # ── 0. Enforce tier limits ────────────────────────────────────────
+        if not user.is_authenticated:
+            if sim_request.num_simulations > GUEST_MAX_NUM_SIMULATIONS:
+                raise AuthorizationError(
+                    f"Guest users are limited to {GUEST_MAX_NUM_SIMULATIONS:,} simulations. "
+                    f"Sign up for free to unlock up to {AUTH_MAX_NUM_SIMULATIONS:,}."
+                )
+            if sim_request.horizon_days > GUEST_MAX_HORIZON_DAYS:
+                raise AuthorizationError(
+                    f"Guest users are limited to {GUEST_MAX_HORIZON_DAYS}-day horizon. "
+                    f"Sign up for free to unlock up to {AUTH_MAX_HORIZON_DAYS} days."
+                )
+
         # ── 1. Fetch historical price data ────────────────────────────────
         logger.info(
             "Simulation request: ticker=%s, horizon=%d, confidence=%.1f%%, "
-            "sims=%d, investment=$%,.0f",
-            request.ticker, request.horizon_days, request.confidence_level,
-            request.num_simulations, request.initial_investment,
+            "sims=%d, investment=$%,.0f, tier=%s",
+            sim_request.ticker, sim_request.horizon_days, sim_request.confidence_level,
+            sim_request.num_simulations, sim_request.initial_investment, user.tier,
         )
 
         prices = await data_service.fetch_historical_data(
-            ticker=request.ticker,
+            ticker=sim_request.ticker,
             period=HISTORICAL_DATA_PERIOD,
         )
 
@@ -152,21 +193,21 @@ async def run_simulation(request: SimulationRequest) -> SimulationResponse:
         # ── 3. Run Monte Carlo simulation ─────────────────────────────────
         engine_result: dict = quant_engine.run_simulation(
             log_returns=log_returns,
-            num_simulations=request.num_simulations,
-            horizon_days=request.horizon_days,
-            confidence_level=request.confidence_level,
-            initial_investment=request.initial_investment,
+            num_simulations=sim_request.num_simulations,
+            horizon_days=sim_request.horizon_days,
+            confidence_level=sim_request.confidence_level,
+            initial_investment=sim_request.initial_investment,
         )
 
         # ── 4. Build the response ─────────────────────────────────────────
         response = SimulationResponse(
             # Echo input parameters
-            ticker=request.ticker,
+            ticker=sim_request.ticker,
             period=HISTORICAL_DATA_PERIOD,
-            horizon_days=request.horizon_days,
-            confidence_level=request.confidence_level,
-            num_simulations=request.num_simulations,
-            initial_investment=request.initial_investment,
+            horizon_days=sim_request.horizon_days,
+            confidence_level=sim_request.confidence_level,
+            num_simulations=sim_request.num_simulations,
+            initial_investment=sim_request.initial_investment,
             current_price=current_price,
             # Engine results (already in the correct nested structure)
             statistics=engine_result["statistics"],
@@ -178,12 +219,39 @@ async def run_simulation(request: SimulationRequest) -> SimulationResponse:
 
         logger.info(
             "Simulation complete for %s: MC VaR=%.4f%%, current_price=$%.2f",
-            request.ticker,
+            sim_request.ticker,
             engine_result["simulated_var"]["var_pct"] * 100,
             current_price,
         )
 
+        # ── 5. Persist history for authenticated users ────────────────────
+        if user.is_authenticated:
+            try:
+                _supabase.table("simulation_runs").insert({
+                    "user_id": user.user_id,
+                    "ticker": sim_request.ticker,
+                    "horizon_days": sim_request.horizon_days,
+                    "confidence_level": sim_request.confidence_level,
+                    "num_simulations": sim_request.num_simulations,
+                    "initial_investment": sim_request.initial_investment,
+                    "var_pct": response.simulated_var.var_pct,
+                    "var_dollar": response.simulated_var.var_dollar,
+                    "cvar_pct": response.simulated_var.cvar_pct,
+                    "cvar_dollar": response.simulated_var.cvar_dollar,
+                    "current_price": response.current_price,
+                }).execute()
+            except Exception as exc:
+                # Non-fatal: log and continue — the simulation result is returned regardless
+                logger.error("Failed to persist simulation history for user %s: %s", user.user_id, exc)
+
         return response
+
+    except AuthorizationError as exc:
+        logger.warning("Tier limit exceeded: %s", exc.message)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.message, "error_code": exc.error_code},
+        )
 
     except InvalidTickerError as exc:
         logger.warning("Invalid ticker: %s", exc.message)
@@ -207,11 +275,112 @@ async def run_simulation(request: SimulationRequest) -> SimulationResponse:
         )
 
     except Exception as exc:
-        logger.exception("Unexpected error during simulation for %s", request.ticker)
+        logger.exception("Unexpected error during simulation for %s", sim_request.ticker)
         return JSONResponse(
             status_code=500,
             content={
                 "detail": f"An unexpected error occurred: {exc}",
+                "error_code": "INTERNAL_ERROR",
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/user/tier
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/user/tier",
+    response_model=UserTierResponse,
+    summary="Get user tier and limits",
+)
+async def get_user_tier(
+    request: Request,
+    user: UserContext = Depends(get_current_user)
+) -> UserTierResponse:
+    """Return the current user's tier, limits, and usage."""
+    
+    # Defaults for guest
+    max_sims_per_hour = GUEST_MAX_SIMULATIONS_PER_HOUR
+    max_num_sims = GUEST_MAX_NUM_SIMULATIONS
+    max_horizon = GUEST_MAX_HORIZON_DAYS
+
+    if user.is_authenticated:
+        max_sims_per_hour = AUTH_MAX_SIMULATIONS_PER_HOUR
+        max_num_sims = AUTH_MAX_NUM_SIMULATIONS
+        max_horizon = AUTH_MAX_HORIZON_DAYS
+
+    # Count usage in the last hour
+    sims_this_hour = 0
+    try:
+        if user.is_authenticated:
+            # Query by user_id
+            response = _supabase.table("usage_counts") \
+                .select("id", count="exact") \
+                .eq("user_id", user.user_id) \
+                .gte("created_at", "now() - interval '1 hour'") \
+                .execute()
+            sims_this_hour = response.count if response.count is not None else 0
+        else:
+            # Query by IP
+            ip = request.client.host if request.client else "unknown"
+            response = _supabase.table("usage_counts") \
+                .select("id", count="exact") \
+                .eq("ip_address", ip) \
+                .is_("user_id", "null") \
+                .gte("created_at", "now() - interval '1 hour'") \
+                .execute()
+            sims_this_hour = response.count if response.count is not None else 0
+    except Exception as exc:
+        logger.warning("Failed to fetch usage count: %s", exc)
+
+    return UserTierResponse(
+        tier=user.tier,
+        limits=TierLimits(
+            max_simulations_per_hour=max_sims_per_hour,
+            max_num_simulations=max_num_sims,
+            max_horizon_days=max_horizon,
+        ),
+        usage=TierUsage(
+            simulations_this_hour=sims_this_hour,
+            max_per_hour=max_sims_per_hour,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/user/history
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/user/history",
+    response_model=SimulationHistoryResponse,
+    summary="Get user simulation history",
+)
+async def get_user_history(
+    user: UserContext = Depends(require_auth)
+) -> SimulationHistoryResponse:
+    """Return the current authenticated user's simulation history."""
+    try:
+        response = _supabase.table("simulation_runs") \
+            .select("*") \
+            .eq("user_id", user.user_id) \
+            .order("created_at", desc=True) \
+            .limit(20) \
+            .execute()
+        
+        return SimulationHistoryResponse(
+            runs=response.data,
+            total=len(response.data)
+        )
+    except Exception as exc:
+        logger.error("Failed to fetch history for user %s: %s", user.user_id, exc)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Failed to fetch simulation history.",
                 "error_code": "INTERNAL_ERROR",
             },
         )

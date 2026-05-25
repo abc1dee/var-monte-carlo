@@ -22,6 +22,7 @@ class SimulationRequest(BaseModel):
     ticker: Annotated[
         str,
         Field(
+            pattern=r"^[A-Z0-9.\-]{1,20}$",
             description="Stock ticker symbol. Can be a predefined ticker (AAPL, SPY, etc.) "
                         "or any valid yfinance symbol (e.g. NVDA, BRK-B).",
             examples=["AAPL", "NVDA", "SPY"],

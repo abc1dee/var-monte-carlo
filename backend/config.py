@@ -8,6 +8,8 @@ limits or defaults in multiple places.
 
 from typing import TypedDict
 
+from settings import settings
+
 
 # ---------------------------------------------------------------------------
 # Ticker Registry
@@ -82,10 +84,26 @@ API_VERSION: str = "1.0.0"
 # CORS
 # ---------------------------------------------------------------------------
 
-# Origins permitted during local development.
-# In production, this list should be replaced with the deployed frontend URL.
-CORS_ALLOWED_ORIGINS: list[str] = [
-    "http://localhost:5173",   # Vite dev server (default port)
-    "http://localhost:4173",   # Vite preview server
-    "http://127.0.0.1:5173",
-]
+# Loaded from CORS_ORIGINS env var (comma-separated) via pydantic-settings.
+# In production, set CORS_ORIGINS to the deployed frontend URL.
+CORS_ALLOWED_ORIGINS: list[str] = settings.cors_origins_list
+
+
+# ---------------------------------------------------------------------------
+# User Tier Limits  (provisional — subject to team's final decision)
+# ---------------------------------------------------------------------------
+#
+# All tier-specific caps are defined here as named constants so they can be
+# changed in one place without touching business logic in the router.
+
+# Simulation runs allowed per rolling 1-hour window
+GUEST_MAX_SIMULATIONS_PER_HOUR: int = 3
+AUTH_MAX_SIMULATIONS_PER_HOUR: int = 20
+
+# Maximum num_simulations parameter value
+GUEST_MAX_NUM_SIMULATIONS: int = 1_000
+AUTH_MAX_NUM_SIMULATIONS: int = 100_000
+
+# Maximum horizon_days parameter value
+GUEST_MAX_HORIZON_DAYS: int = 30
+AUTH_MAX_HORIZON_DAYS: int = 252

@@ -91,3 +91,30 @@ class SimulationError(AppBaseError):
 
     status_code = 500
     error_code = "INTERNAL_ERROR"
+
+
+class AuthenticationError(AppBaseError):
+    """
+    Raised when a valid authentication token is required but not provided
+    or the provided token is expired / malformed.
+
+    HTTP mapping: 401 Unauthorized
+    Error code:   AUTHENTICATION_REQUIRED
+    """
+
+    status_code = 401
+    error_code = "AUTHENTICATION_REQUIRED"
+
+
+class AuthorizationError(AppBaseError):
+    """
+    Raised when an authenticated (or guest) user attempts an action that
+    exceeds their tier's limits — e.g. too many simulations or too long
+    a horizon for a guest account.
+
+    HTTP mapping: 403 Forbidden
+    Error code:   TIER_LIMIT_EXCEEDED
+    """
+
+    status_code = 403
+    error_code = "TIER_LIMIT_EXCEEDED"
