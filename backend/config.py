@@ -101,7 +101,7 @@ GUEST_MAX_SIMULATIONS_PER_HOUR: int = 3
 AUTH_MAX_SIMULATIONS_PER_HOUR: int = 20
 
 # Maximum num_simulations parameter value
-GUEST_MAX_NUM_SIMULATIONS: int = 1_000
+GUEST_MAX_NUM_SIMULATIONS: int = 1000
 AUTH_MAX_NUM_SIMULATIONS: int = 100_000
 
 # Maximum horizon_days parameter value

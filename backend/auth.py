@@ -22,7 +22,8 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 from fastapi import Depends, Request
-from jose import JWTError, jwt
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from supabase import create_client, Client
 
 from exceptions import AuthenticationError
 from settings import settings
@@ -58,13 +59,11 @@ class UserContext:
 # JWT helpers
 # ---------------------------------------------------------------------------
 
-# Supabase signs JWTs with HS256 by default.
-_JWT_ALGORITHM: str = "HS256"
-
+_supabase: Client = create_client(settings.supabase_url, settings.supabase_service_role_key)
 
 def decode_supabase_jwt(token: str) -> dict:
     """
-    Decode and validate a Supabase-issued JWT.
+    Validate a Supabase-issued JWT using the official Supabase SDK.
 
     Parameters
     ----------
@@ -74,23 +73,21 @@ def decode_supabase_jwt(token: str) -> dict:
     Returns
     -------
     dict
-        The decoded JWT payload containing ``sub``, ``email``, ``role``, etc.
+        The decoded JWT payload containing ``sub`` and ``email``.
 
     Raises
     ------
     AuthenticationError
-        If the token is expired, malformed, or fails signature verification.
+        If the token is expired, malformed, or fails validation.
     """
     try:
-        payload: dict = jwt.decode(
-            token,
-            settings.supabase_jwt_secret,
-            algorithms=[_JWT_ALGORITHM],
-            audience="authenticated",
-        )
-        return payload
-    except JWTError as exc:
-        logger.warning("JWT decode failed: %s", exc)
+        res = _supabase.auth.get_user(token)
+        return {
+            "sub": res.user.id,
+            "email": res.user.email
+        }
+    except Exception as exc:
+        logger.warning("Supabase auth failed: %s", exc)
         raise AuthenticationError(
             "Invalid or expired authentication token."
         ) from exc
@@ -100,8 +97,13 @@ def decode_supabase_jwt(token: str) -> dict:
 # FastAPI dependencies
 # ---------------------------------------------------------------------------
 
+security = HTTPBearer(auto_error=False)
 
-async def get_current_user(request: Request) -> UserContext:
+
+async def get_current_user(
+    request: Request,
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> UserContext:
     """
     Soft-auth dependency — extracts user identity from the Authorization
     header if present.  Returns a guest ``UserContext`` if the header is
