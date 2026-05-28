@@ -23,6 +23,7 @@ Custom domain exceptions (InvalidTickerError, DataFetchError, etc.) are
 registered in ``main.py``, keeping each handler focused on the happy path.
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, Request
@@ -53,6 +54,7 @@ from schemas.responses import (
 from services import data_service, db_service, quant_engine
 from auth import UserContext, get_current_user, require_auth
 from middleware.rate_limit import limiter, get_dynamic_limit
+from slowapi.util import get_remote_address
 
 # ---------------------------------------------------------------------------
 # Router instance
@@ -180,7 +182,10 @@ async def run_simulation(
     log_returns, current_price = data_service.preprocess_data(prices)
 
     # ── 3. Run Monte Carlo simulation ─────────────────────────────────────
-    engine_result: dict = quant_engine.run_simulation(
+    # quant_engine.run_simulation() is CPU-bound (NumPy across 10k+ paths).
+    # Running it in a thread executor keeps the event loop free for other requests.
+    engine_result: dict = await asyncio.to_thread(
+        quant_engine.run_simulation,
         log_returns=log_returns,
         num_simulations=sim_request.num_simulations,
         horizon_days=sim_request.horizon_days,
@@ -212,9 +217,13 @@ async def run_simulation(
     )
 
     # ── 5. Persist — db_service handles all errors internally (non-fatal) ─
-    ip = request.client.host if request.client else None
+    # get_remote_address reads X-Forwarded-For so this is correct behind
+    # Render/cloud proxies, unlike request.client.host which returns the
+    # proxy's IP and would make all guests share one rate-limit bucket.
+    ip = get_remote_address(request)
     if user.is_authenticated:
-        db_service.save_simulation_run(
+        await asyncio.to_thread(
+            db_service.save_simulation_run,
             user_id=user.user_id,
             ticker=sim_request.ticker,
             horizon_days=sim_request.horizon_days,
@@ -227,9 +236,9 @@ async def run_simulation(
             cvar_dollar=response.simulated_var.cvar_dollar,
             current_price=response.current_price,
         )
-        db_service.save_usage_count(user_id=user.user_id, ip=ip)
+        await asyncio.to_thread(db_service.save_usage_count, user_id=user.user_id, ip=ip)
     else:
-        db_service.save_usage_count(user_id=None, ip=ip)
+        await asyncio.to_thread(db_service.save_usage_count, user_id=None, ip=ip)
 
     return response
 
@@ -260,8 +269,9 @@ async def get_user_tier(
 
     sims_this_hour = 0
     try:
-        ip = request.client.host if request.client else None
-        sims_this_hour = db_service.count_usage_last_hour(
+        ip = get_remote_address(request)
+        sims_this_hour = await asyncio.to_thread(
+            db_service.count_usage_last_hour,
             user_id=user.user_id if user.is_authenticated else None,
             ip=ip if not user.is_authenticated else None,
         )
@@ -297,7 +307,7 @@ async def get_user_history(
 ) -> SimulationHistoryResponse:
     """Return the current authenticated user's simulation history."""
     try:
-        rows = db_service.get_simulation_history(user.user_id)
+        rows = await asyncio.to_thread(db_service.get_simulation_history, user.user_id)
         logger.info("Fetched %d history rows for user %s.", len(rows), user.user_id)
         return SimulationHistoryResponse(runs=rows, total=len(rows))
     except Exception as exc:
