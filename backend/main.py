@@ -18,10 +18,12 @@ from typing import Optional
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from auth import UserContext, decode_supabase_jwt
+from exceptions import AppBaseError
 from config import (
     API_DESCRIPTION,
     API_TITLE,
@@ -58,6 +60,38 @@ app = FastAPI(
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# ---------------------------------------------------------------------------
+# Global exception handlers
+# ---------------------------------------------------------------------------
+
+# One handler for ALL custom domain exceptions (InvalidTickerError,
+# DataFetchError, SimulationError, AuthorizationError, AuthenticationError).
+# This removes the need for repetitive except-blocks in every route handler.
+@app.exception_handler(AppBaseError)
+async def app_error_handler(request: Request, exc: AppBaseError) -> Response:
+    logger.warning(
+        "Domain error [%s %s]: %s — %s",
+        request.method, request.url.path, exc.error_code, exc.message,
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.message, "error_code": exc.error_code},
+    )
+
+
+# Catch-all for truly unexpected errors so clients always get structured JSON.
+@app.exception_handler(Exception)
+async def generic_error_handler(request: Request, exc: Exception) -> Response:
+    logger.exception(
+        "Unhandled exception [%s %s]: %s",
+        request.method, request.url.path, exc,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An unexpected server error occurred.", "error_code": "INTERNAL_ERROR"},
+    )
 
 
 # ---------------------------------------------------------------------------

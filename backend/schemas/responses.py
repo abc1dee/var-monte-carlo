@@ -10,6 +10,7 @@ this file AND src/types/api.ts in the same commit.
 """
 
 from datetime import datetime
+from typing import Optional
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -409,7 +410,14 @@ class SimulationResponse(BaseModel):
 
 
 class SimulationHistoryItem(BaseModel):
-    """A single past simulation run."""
+    """A single past simulation run returned by GET /api/user/history.
+
+    ``extra='ignore'`` silently discards extra columns that Supabase
+    returns (e.g. ``id``, ``user_id``) that are not part of the API
+    contract.  This keeps the model stable as the DB schema evolves.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     ticker: str
     horizon_days: int
@@ -420,8 +428,9 @@ class SimulationHistoryItem(BaseModel):
     var_dollar: float
     cvar_pct: float
     cvar_dollar: float
-    current_price: float
-    created_at: datetime
+    # Optional to handle legacy rows that pre-date these columns being added
+    current_price: Optional[float] = None
+    created_at: Optional[datetime] = None
 
 
 class SimulationHistoryResponse(BaseModel):

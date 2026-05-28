@@ -5,7 +5,7 @@ These models define the shape and validation rules for all incoming request bodi
 They must stay in sync with the API contract in docs/api-contracts.md.
 """
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Annotated
 
 

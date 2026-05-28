@@ -26,6 +26,7 @@ InvalidTickerError  (400) — symbol not found in Yahoo Finance
 DataFetchError      (503) — network failure or empty payload from yfinance
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime
@@ -166,13 +167,17 @@ async def fetch_historical_data(ticker: str, period: str = "1y") -> pd.DataFrame
     logger.info("Fetching %s data from yfinance (period=%s).", ticker, period)
 
     # ── 2. Network call ───────────────────────────────────────────────────
+    # yf.download() is a blocking network call (~1-2 s).  Running it in a
+    # thread executor prevents it from stalling the FastAPI event loop.
     try:
-        raw: pd.DataFrame = yf.download(
-            tickers=ticker,
-            period=period,
-            auto_adjust=True,   # Use split/dividend-adjusted prices
-            progress=False,     # Suppress yfinance's tqdm progress bar
-            threads=False,      # Single-threaded; we handle concurrency via FastAPI
+        raw: pd.DataFrame = await asyncio.to_thread(
+            lambda: yf.download(
+                tickers=ticker,
+                period=period,
+                auto_adjust=True,   # Use split/dividend-adjusted prices
+                progress=False,     # Suppress yfinance's tqdm progress bar
+                threads=False,      # Single-threaded; we handle concurrency via FastAPI
+            )
         )
     except Exception as exc:
         logger.error(
@@ -334,12 +339,14 @@ async def validate_ticker(symbol: str) -> bool:
     logger.debug("Validating ticker symbol: %s", symbol)
 
     try:
-        probe: pd.DataFrame = yf.download(
-            tickers=symbol,
-            period="5d",        # Minimal window — just need any data at all
-            auto_adjust=True,
-            progress=False,
-            threads=False,
+        probe: pd.DataFrame = await asyncio.to_thread(
+            lambda: yf.download(
+                tickers=symbol,
+                period="5d",        # Minimal window — just need any data at all
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+            )
         )
         is_valid = probe is not None and not probe.empty
         logger.info(

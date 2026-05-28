@@ -18,7 +18,7 @@ issued by Supabase Auth (email/password flow).
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Optional
 
 from fastapi import Depends, Request
@@ -97,17 +97,24 @@ def decode_supabase_jwt(token: str) -> dict:
 # FastAPI dependencies
 # ---------------------------------------------------------------------------
 
-security = HTTPBearer(auto_error=False)
+# Declared here solely to register the Bearer security scheme in the OpenAPI
+# spec.  This is what makes Swagger UI show the "Authorize" lock button and
+# allows testing with a pasted JWT.  The actual token validation is done by
+# the auth middleware in main.py — the credentials object below is never read.
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
     request: Request,
-    auth: Optional[HTTPAuthorizationCredentials] = Depends(security)
+    _: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ) -> UserContext:
     """
-    Soft-auth dependency — extracts user identity from the Authorization
-    header if present.  Returns a guest ``UserContext`` if the header is
-    missing or the token is invalid.
+    Soft-auth dependency — returns the ``UserContext`` that the auth
+    middleware (``main.inject_user_context``) already decoded and attached
+    to ``request.state.user``.
+
+    Reading from ``request.state`` avoids a second ``supabase.auth.get_user()``
+    network call per request (the middleware already made one).
 
     **Never raises an error** — callers always get a ``UserContext``.
 
@@ -120,41 +127,7 @@ async def get_current_user(
         ):
             ...
     """
-    auth_header: Optional[str] = request.headers.get("Authorization")
-
-    # ── No header → guest ─────────────────────────────────────────────────
-    if not auth_header:
-        logger.debug("No Authorization header — treating as guest.")
-        return UserContext()
-
-    # ── Malformed header → guest ──────────────────────────────────────────
-    parts = auth_header.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        logger.warning("Malformed Authorization header — treating as guest.")
-        return UserContext()
-
-    # ── Decode JWT ────────────────────────────────────────────────────────
-    token = parts[1]
-    try:
-        payload = decode_supabase_jwt(token)
-    except AuthenticationError:
-        # Token is present but invalid/expired → treat as guest, not 401.
-        # The warning was already logged inside decode_supabase_jwt.
-        return UserContext()
-
-    user_id: str = payload.get("sub", "")
-    email: Optional[str] = payload.get("email")
-
-    logger.info(
-        "Authenticated user: id=%s, email=%s", user_id, email,
-    )
-
-    return UserContext(
-        user_id=user_id,
-        email=email,
-        is_authenticated=True,
-        tier="authenticated",
-    )
+    return getattr(request.state, "user", UserContext())
 
 
 async def require_auth(
